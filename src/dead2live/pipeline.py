@@ -29,6 +29,27 @@ GOOD_ENOUGH = 0.8       # stop trying further detectors at/above this score
 USABLE = 0.35           # below this we consider detection failed
 
 
+def _appearance(image_bgr, rig) -> float:
+    """Penalise a detection whose eyes sit on plain skin (no eye-like contrast).
+    Guards against geometrically-valid-but-misplaced fits. 1.0 = all eyes land
+    on a real feature."""
+    if rig is None or not rig.eyes:
+        return 1.0
+    skin = np.array(rig.skin, np.float32)
+    h, w = image_bgr.shape[:2]
+    oks = []
+    for e in rig.eyes:
+        rr = max(2, int(min(e.rx, e.ry)))
+        x0, x1 = max(0, int(e.cx - rr)), min(w, int(e.cx + rr))
+        y0, y1 = max(0, int(e.cy - rr)), min(h, int(e.cy + rr))
+        patch = image_bgr[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32)
+        if patch.size == 0:
+            oks.append(0.5); continue
+        contrast = np.linalg.norm(patch - skin, axis=1).max()
+        oks.append(1.0 if contrast >= 30 else 0.45)
+    return float(np.mean(oks))
+
+
 @dataclass
 class PipelineInfo:
     flat: bool
@@ -39,9 +60,16 @@ class PipelineInfo:
 
 
 def build_animator(image_bgr: np.ndarray, prefer_warp: Optional[bool] = None):
-    """Return (animator, PipelineInfo). Raises if no detector finds a face."""
+    """Return (animator, PipelineInfo). Raises if no detector finds a face.
+
+    Flat illustration:  CV white-eye fast path -> else Gemini-Vision understanding
+                        layer (handles dark eyes / profile / half-body).
+    Photo / painted:    MediaPipe -> else Gemini-Vision.
+    MediaPipe is deliberately kept OUT of the flat-art path: it fits a generic
+    human-proportioned face that looks geometrically valid but lands off the
+    real features on stylised art (the "confident but wrong" failure)."""
     flat = is_flat_art(image_bgr) if prefer_warp is None else (not prefer_warp)
-    order = [_cartoon, _mediapipe, _gemini] if flat else [_mediapipe, _gemini]
+    order = [_cartoon, _gemini] if flat else [_mediapipe, _gemini]
 
     best = None  # (score, detector_name, rig)
     for det in order:
@@ -49,7 +77,7 @@ def build_animator(image_bgr: np.ndarray, prefer_warp: Optional[bool] = None):
             rig = det.detect(image_bgr)
         except Exception:
             rig = None
-        sc = rig_score(rig)
+        sc = rig_score(rig) * _appearance(image_bgr, rig)
         if best is None or sc > best[0]:
             best = (sc, det.name, rig)
         if sc >= GOOD_ENOUGH:

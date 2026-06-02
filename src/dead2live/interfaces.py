@@ -40,11 +40,26 @@ class Animator(Protocol):
 #  Geometry validation - lets the router reject a bad detection and fall back
 # --------------------------------------------------------------------------- #
 def rig_score(rig: Optional[Rig]) -> float:
-    """0 = unusable, 1 = textbook face. Used to pick the best detector."""
-    if rig is None or rig.left_eye is None or rig.right_eye is None:
+    """0 = unusable, 1 = textbook face. Used to pick the best detector.
+    Supports single-eye profile rigs (one eye is allowed to be None)."""
+    if rig is None or not rig.eyes:
         return 0.0
-    le, re_ = rig.left_eye, rig.right_eye
     w, h = rig.width, rig.height
+
+    # --- profile / single visible eye ---
+    if len(rig.eyes) == 1:
+        e = rig.eyes[0]
+        s = 0.9
+        if not (0.03 * h < e.cy < 0.82 * h):
+            s *= 0.5
+        if not (0.05 * w < e.cx < 0.95 * w):
+            s *= 0.5
+        if rig.mouth is not None and rig.mouth.cy < e.cy - e.ry:
+            s *= 0.5
+        return float(max(0.0, min(1.0, s)))
+
+    # --- frontal / two eyes ---
+    le, re_ = rig.left_eye, rig.right_eye
     s = 1.0
 
     # eyes must be left/right of each other with a sane horizontal gap

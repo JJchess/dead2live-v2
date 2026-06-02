@@ -18,12 +18,21 @@
 文字指令 ─►【Brain】规则/Gemini ─► list[Plan] ─► build_timeline ─► [AnimationState × N]
                                                                    │（通用语义控制信号）
 任意2D图 ─►【Pipeline 自动路由】                                    ▼
-   │  is_flat_art? ┌─ 扁平插画 → 检测: CV→MediaPipe→GeminiVision ─► Rig ─►【PuppetAnimator】程序化重绘
-   └───────────────┤
-                   └─ 照片/复杂 → 检测: MediaPipe→GeminiVision ────► Rig ─►【WarpAnimator】网格形变(TPS)
+   │  is_flat_art? ┌─ 扁平插画 → 检测: CV白眼快路 → GeminiVision理解层 ─► Rig ─►【PuppetAnimator】程序化重绘
+   └───────────────┤                              (理解层: 脸框+朝向+CV吸附)
+                   └─ 照片/复杂 → 检测: MediaPipe→GeminiVision ────────► Rig ─►【WarpAnimator】网格形变(TPS)
                                                                    │
                                                           【Render】─► MP4 / GIF
 ```
+
+### 画面/姿态覆盖（2D 插画）
+- **正脸 / 侧脸 / 3-4 侧**：`Rig.orientation`；侧脸自动变成单眼装配，只渲染可见的眼。
+- **头部特写 / 半身像**：理解层返回 `face_box`（只框头、不含身体），头部运动只动头、**身体与背景保持稳定**。
+- **理解层为什么是 Gemini Vision**：它能"看懂"任意画风——深色动漫眼、半身像里的脸、侧脸朝向；
+  纯 CV/MediaPipe 做不到（MediaPipe 会按真人比例硬套，几何合理但**位置全错**）。
+- **CV 吸附 + 外观校验**：把 Gemini 的粗定位**吸附到真实色块**（深眼/浅眼/嘴唇通吃）做像素精修；
+  并校验"眼区确有异于肤色的块"，堵住"自信却错"。
+- 已实测：正脸卡通(莎士比亚) / 半身像动漫女孩(深色眼) / 右侧脸，检测+动画全部正确（见 `outputs/final_*.png`）。
 
 - **契约 A `AnimationState`**：与画风无关的语义控制（眼/瞳/眉/嘴/头姿）——最具普适性的一层。
 - **契约 B `Rig`**：五官位置+调色板的中间表示，可由 CV / MediaPipe / Gemini Vision / 手写 JSON 产出。

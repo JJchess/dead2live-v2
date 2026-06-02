@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -17,7 +18,8 @@ from .animator import PuppetAnimator, AnimationState
 from .pipeline import build_animator
 from . import brain, brain_gemini, render
 
-DEFAULT_IMAGE = "test_image.png"
+_ROOT = Path(__file__).resolve().parents[2]      # project root (dead2live/)
+DEFAULT_IMAGE = str(_ROOT / "test_image.png")
 FPS = 25
 GEMINI_ON = brain_gemini.enable()    # True if GEMINI_API_KEY is configured
 
@@ -54,6 +56,8 @@ ENGINE = Engine()
 
 def _load_default_rgb() -> np.ndarray:
     bgr = cv2.imread(DEFAULT_IMAGE)
+    if bgr is None:                              # fallback: blank canvas
+        bgr = np.full((512, 512, 3), 230, np.uint8)
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 

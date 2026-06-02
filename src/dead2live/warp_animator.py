@@ -75,16 +75,19 @@ class WarpAnimator:
 
     def _build_head_mask(self) -> np.ndarray:
         r = self.rig
-        le, re_ = r.left_eye, r.right_eye
-        fcx = (le.cx + re_.cx) / 2
-        fcy = (le.cy + re_.cy) / 2
-        hr = r.head_radius or (re_.cx - le.cx)
-        chin_y = r.head_pivot[1]
-        top_y = fcy - hr * 1.15
-        cyc = (top_y + chin_y) / 2
         m = np.zeros((self.h, self.w), np.uint8)
-        cv2.ellipse(m, (int(fcx), int(cyc)), (int(hr * 1.15), int((chin_y - top_y) / 2)),
-                    0, 0, 360, 255, -1)
+        if r.face_box:
+            fx, fy, fw, fh = r.face_box
+            cx, cyc, ax, ay = fx + fw / 2, fy + fh / 2, fw * 0.62, fh * 0.60
+        else:
+            le, re_ = r.left_eye, r.right_eye
+            fcx = (le.cx + re_.cx) / 2
+            fcy = (le.cy + re_.cy) / 2
+            hr = r.head_radius or (re_.cx - le.cx)
+            chin_y = r.head_pivot[1]
+            top_y = fcy - hr * 1.15
+            cx, cyc, ax, ay = fcx, (top_y + chin_y) / 2, hr * 1.15, (chin_y - top_y) / 2
+        cv2.ellipse(m, (int(cx), int(cyc)), (int(ax), int(ay)), 0, 0, 360, 255, -1)
         m = cv2.GaussianBlur(m, (0, 0), sigmaX=self.w * 0.02)
         return (m.astype(np.float32) / 255.0)[..., None]
 

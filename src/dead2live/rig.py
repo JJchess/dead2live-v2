@@ -61,14 +61,27 @@ class Rig:
     width: int
     height: int
     skin: list                       # BGR sampled face skin
-    left_eye: Optional[Eye] = None
+    left_eye: Optional[Eye] = None   # None => not visible (e.g. profile)
     right_eye: Optional[Eye] = None
     left_brow: Optional[Brow] = None
     right_brow: Optional[Brow] = None
     mouth: Optional[Mouth] = None
     head_pivot: tuple = (0.0, 0.0)   # (x,y) pivot for nod/tilt (neck)
     head_radius: float = 0.0
+    # frontal | three_quarter_left | three_quarter_right | profile_left | profile_right
+    orientation: str = "frontal"
+    # (x, y, w, h) head bounding box in pixels - lets half-body shots animate
+    # only the head and keep the torso still. None => whole image is the head.
+    face_box: Optional[tuple] = None
     source: str = "cartoon-cv"
+
+    @property
+    def eyes(self):
+        return [e for e in (self.left_eye, self.right_eye) if e is not None]
+
+    @property
+    def is_profile(self) -> bool:
+        return self.orientation.startswith("profile")
 
     # ----- serialisation ---------------------------------------------------
     def to_json(self, path: str | Path) -> None:
@@ -88,6 +101,8 @@ class Rig:
             if d.get(k):
                 d[k] = cls(**d[k])
         d["head_pivot"] = tuple(d["head_pivot"])
+        if d.get("face_box"):
+            d["face_box"] = tuple(d["face_box"])
         return Rig(**d)
 
 
@@ -298,6 +313,11 @@ def draw_rig_overlay(img: np.ndarray, rig: Rig) -> np.ndarray:
         cv2.rectangle(o, (int(m.cx - m.w / 2), int(m.cy - m.h / 2)),
                       (int(m.cx + m.w / 2), int(m.cy + m.h / 2)), (255, 0, 255), 2)
     cv2.circle(o, (int(rig.head_pivot[0]), int(rig.head_pivot[1])), 5, (0, 0, 255), -1)
+    if rig.face_box:
+        x, y, w, h = [int(v) for v in rig.face_box]
+        cv2.rectangle(o, (x, y), (x + w, y + h), (255, 255, 0), 2)
+    cv2.putText(o, rig.orientation, (10, o.shape[0] - 14),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     return o
 
 

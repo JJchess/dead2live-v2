@@ -65,21 +65,25 @@ class PuppetAnimator:
         self.head_mask = self._build_head_mask()   # float32 HxWx1, feathered 0..1
 
     def _build_head_mask(self) -> np.ndarray:
-        """Soft elliptical mask over hair+face down to the chin, so head motion
-        moves only the head and leaves the body / background still."""
+        """Soft elliptical mask over the head, so head motion moves only the
+        head and leaves the body / background still. Uses the rig's face_box
+        when available (correct for half-body portraits)."""
         h, w = self.img.shape[:2]
         r = self.rig
-        if r.left_eye and r.right_eye:
-            cx = (r.left_eye.cx + r.right_eye.cx) / 2
-            eye_y = (r.left_eye.cy + r.right_eye.cy) / 2
+        if r.face_box:
+            fx, fy, fw, fh = r.face_box
+            cx, cyc = fx + fw / 2, fy + fh / 2
+            ax, ay = fw * 0.62, fh * 0.60
         else:
-            cx, eye_y = w / 2, h * 0.37
-        # chin a little below the mouth; top above the hair
-        chin_y = (r.mouth.cy + r.mouth.h * 1.4) if r.mouth else h * 0.66
-        top_y = max(0.0, eye_y - h * 0.30)
-        cyc = (top_y + chin_y) / 2
-        ax = w * 0.37
-        ay = (chin_y - top_y) / 2
+            if r.eyes:
+                cx = np.mean([e.cx for e in r.eyes])
+                eye_y = np.mean([e.cy for e in r.eyes])
+            else:
+                cx, eye_y = w / 2, h * 0.37
+            chin_y = (r.mouth.cy + r.mouth.h * 1.4) if r.mouth else h * 0.66
+            top_y = max(0.0, eye_y - h * 0.30)
+            cyc = (top_y + chin_y) / 2
+            ax, ay = w * 0.37, (chin_y - top_y) / 2
         m = np.zeros((h, w), np.uint8)
         cv2.ellipse(m, (int(cx), int(cyc)), (int(ax), int(ay)), 0, 0, 360, 255, -1)
         m = cv2.GaussianBlur(m, (0, 0), sigmaX=w * 0.02)   # feather edges

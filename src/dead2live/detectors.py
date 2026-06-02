@@ -23,6 +23,83 @@ from .rig import Rig, Eye, Brow, Mouth, CartoonRigDetector, _median_color
 
 
 # --------------------------------------------------------------------------- #
+#  CV "snap": pull an approximate eye point onto the real drawn eye blob.
+#  Works for dark anime eyes AND white-sclera eyes (anything != skin).
+# --------------------------------------------------------------------------- #
+def _snap_eye(img, cx, cy, rx, ry, skin, thresh: float = 45.0):
+    h, w = img.shape[:2]
+    wx, wy = int(rx * 1.9) + 5, int(ry * 1.9) + 5
+    x0, y0 = max(0, int(cx - wx)), max(0, int(cy - wy))
+    x1, y1 = min(w, int(cx + wx)), min(h, int(cy + wy))
+    sub = img[y0:y1, x0:x1]
+    if sub.size == 0:
+        return None
+    dist = np.linalg.norm(sub.astype(np.float32) - np.array(skin, np.float32), axis=2)
+    mask = (dist > thresh).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lbl, stats, cent = cv2.connectedComponentsWithStats(mask)
+    if n <= 1:
+        return None
+    win_area = sub.shape[0] * sub.shape[1]
+    cxl, cyl = cx - x0, cy - y0          # approx centre in window coords
+    best, best_d = None, 1e9
+    for i in range(1, n):
+        a = stats[i, cv2.CC_STAT_AREA]
+        if a < win_area * 0.02 or a > win_area * 0.75:
+            continue
+        d = (cent[i][0] - cxl) ** 2 + (cent[i][1] - cyl) ** 2
+        if d < best_d:
+            best_d, best = d, i
+    if best is None:
+        return None
+    bx, by = stats[best, cv2.CC_STAT_LEFT], stats[best, cv2.CC_STAT_TOP]
+    bw, bh = stats[best, cv2.CC_STAT_WIDTH], stats[best, cv2.CC_STAT_HEIGHT]
+    ncx, ncy = x0 + cent[best][0], y0 + cent[best][1]
+    blob = img[y0 + by:y0 + by + bh, x0 + bx:x0 + bx + bw].reshape(-1, 3)
+    white = [int(v) for v in np.median(blob, axis=0)]
+    pupil = [int(v) for v in blob[int(np.argmin(blob.sum(axis=1)))]]
+    return Eye(cx=float(ncx), cy=float(ncy), rx=max(bw / 2, 3), ry=max(bh / 2, 3),
+               pupil_r=max(min(bw, bh) * 0.32, 2), white=white, pupil=pupil)
+
+
+def _snap_mouth(img, cx, cy, mw, mh, skin, thresh: float = 40.0):
+    """Snap a mouth estimate onto the nearest darker-than-skin, wider-than-tall
+    blob (the lips/mouth line). Returns (cx,cy,w,h,color) or None."""
+    h, w = img.shape[:2]
+    wx, wy = int(mw * 1.2) + 8, int(max(mh * 2.4, mw * 0.6)) + 8
+    x0, y0 = max(0, int(cx - wx)), max(0, int(cy - wy))
+    x1, y1 = min(w, int(cx + wx)), min(h, int(cy + wy))
+    sub = img[y0:y1, x0:x1]
+    if sub.size == 0:
+        return None
+    dist = np.linalg.norm(sub.astype(np.float32) - np.array(skin, np.float32), axis=2)
+    darker = sub.sum(axis=2) < (sum(skin) - 15)
+    mask = ((dist > thresh) & darker).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lbl, stats, cent = cv2.connectedComponentsWithStats(mask)
+    if n <= 1:
+        return None
+    win_area = sub.shape[0] * sub.shape[1]
+    cxl, cyl = cx - x0, cy - y0
+    best, best_d = None, 1e9
+    for i in range(1, n):
+        a = stats[i, cv2.CC_STAT_AREA]
+        bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        if a < win_area * 0.02 or a > win_area * 0.8 or bw < bh * 0.8:
+            continue
+        d = (cent[i][0] - cxl) ** 2 + (cent[i][1] - cyl) ** 2
+        if d < best_d:
+            best_d, best = d, i
+    if best is None:
+        return None
+    bx, by = stats[best, cv2.CC_STAT_LEFT], stats[best, cv2.CC_STAT_TOP]
+    bw, bh = stats[best, cv2.CC_STAT_WIDTH], stats[best, cv2.CC_STAT_HEIGHT]
+    blob = img[y0 + by:y0 + by + bh, x0 + bx:x0 + bx + bw].reshape(-1, 3)
+    color = [int(v) for v in blob[int(np.argmin(blob.sum(axis=1)))]]
+    return (x0 + cent[best][0], y0 + cent[best][1], float(bw), float(bh), color)
+
+
+# --------------------------------------------------------------------------- #
 #  MediaPipe (photos)
 # --------------------------------------------------------------------------- #
 class MediaPipeRigDetector:
@@ -107,40 +184,55 @@ class MediaPipeRigDetector:
 # --------------------------------------------------------------------------- #
 #  Gemini Vision (any 2D style)
 # --------------------------------------------------------------------------- #
-_VISION_PROMPT = """You are a precise facial-keypoint locator for a 2D character
-(any style: anime, cartoon, painting, mascot, photo). Look at the image and
-return NORMALIZED coordinates (0..1, x by width, y by height) of the face parts.
-rx/rw are fractions of image WIDTH, ry/rh fractions of image HEIGHT.
-"left_eye"/"right_eye" mean the eye on the LEFT/RIGHT side of the IMAGE.
-Return ONLY JSON for the schema. If a part is missing, estimate from anatomy."""
+_VISION_PROMPT = """You locate facial features on a 2D illustration / cartoon /
+anime character so it can be rigged for animation. The character may be a tight
+HEAD crop OR a HALF-BODY portrait (with shoulders/clothes), and may face the
+viewer (frontal), be turned (three-quarter), or be seen from the side (profile).
+
+Return NORMALIZED coordinates (0..1; x & w & rx by image WIDTH, y & h & ry by
+image HEIGHT):
+- orientation: frontal | three_quarter_left | three_quarter_right |
+  profile_left | profile_right  (….left/right = the direction the face turns,
+  from the VIEWER's point of view).
+- head_box {x,y,w,h}: a tight box around the whole HEAD INCLUDING HAIR but NOT
+  the body / shoulders / collar.
+- left_eye / right_eye: the eye on the IMAGE-LEFT / IMAGE-RIGHT side. Locate the
+  ACTUAL drawn eye even when it is a solid dark shape with only a small
+  highlight. rx,ry = half width/height. Set "visible": false for an eye that is
+  hidden in a profile / strong three-quarter view (still give your best guess
+  for its position).
+- left_brow / right_brow {x,y,w,visible}; mouth {x,y,w,h}; nose_tip {x,y}.
+Output ONLY JSON for the schema."""
+
+_ORIENTS = ["frontal", "three_quarter_left", "three_quarter_right",
+            "profile_left", "profile_right"]
+_eye_obj = {"type": "object", "properties": {
+    "x": {"type": "number"}, "y": {"type": "number"},
+    "rx": {"type": "number"}, "ry": {"type": "number"},
+    "visible": {"type": "boolean"}}, "required": ["x", "y", "rx", "ry"]}
+_brow_obj = {"type": "object", "properties": {
+    "x": {"type": "number"}, "y": {"type": "number"},
+    "w": {"type": "number"}, "visible": {"type": "boolean"}},
+    "required": ["x", "y"]}
 
 _VISION_SCHEMA = {
     "type": "object",
     "properties": {
-        "left_eye":  {"type": "object", "properties": {
+        "orientation": {"type": "string", "enum": _ORIENTS},
+        "head_box": {"type": "object", "properties": {
             "x": {"type": "number"}, "y": {"type": "number"},
-            "rx": {"type": "number"}, "ry": {"type": "number"},
-            "pupil_r": {"type": "number"}}, "required": ["x", "y", "rx", "ry"]},
-        "right_eye": {"type": "object", "properties": {
-            "x": {"type": "number"}, "y": {"type": "number"},
-            "rx": {"type": "number"}, "ry": {"type": "number"},
-            "pupil_r": {"type": "number"}}, "required": ["x", "y", "rx", "ry"]},
-        "left_brow":  {"type": "object", "properties": {
-            "x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}},
-            "required": ["x", "y"]},
-        "right_brow": {"type": "object", "properties": {
-            "x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}},
-            "required": ["x", "y"]},
+            "w": {"type": "number"}, "h": {"type": "number"}},
+            "required": ["x", "y", "w", "h"]},
+        "left_eye": _eye_obj, "right_eye": _eye_obj,
+        "left_brow": _brow_obj, "right_brow": _brow_obj,
         "mouth": {"type": "object", "properties": {
             "x": {"type": "number"}, "y": {"type": "number"},
             "w": {"type": "number"}, "h": {"type": "number"}},
             "required": ["x", "y", "w", "h"]},
-        "face": {"type": "object", "properties": {
-            "cx": {"type": "number"}, "cy": {"type": "number"},
-            "rx": {"type": "number"}, "ry": {"type": "number"}},
-            "required": ["cx", "cy", "rx", "ry"]},
+        "nose_tip": {"type": "object", "properties": {
+            "x": {"type": "number"}, "y": {"type": "number"}}},
     },
-    "required": ["left_eye", "right_eye", "mouth", "face"],
+    "required": ["orientation", "head_box", "left_eye", "right_eye", "mouth"],
 }
 
 _ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -179,54 +271,70 @@ class GeminiVisionRigDetector:
 
     def _to_rig(self, d: dict, img: np.ndarray) -> Rig:
         h, w = img.shape[:2]
+        orient = d.get("orientation", "frontal")
+        hb = d["head_box"]
+        fx, fy, fw, fh = hb["x"] * w, hb["y"] * h, hb["w"] * w, hb["h"] * h
+        face_box = (max(0.0, fx), max(0.0, fy), fw, fh)
+
+        # skin: sample inside the head box around the cheeks (avoid features)
+        sx, sy = fx + fw / 2, fy + fh * 0.62
+        skins = [_median_color(img, int(sx + dx), int(sy), 4)
+                 for dx in (-fw * 0.22, 0, fw * 0.22)]
+        skin = [int(v) for v in np.median(np.array(skins), axis=0)]
 
         def mk_eye(e):
+            if e is None:
+                return None, False
+            vis = e.get("visible", True)
             cx, cy = e["x"] * w, e["y"] * h
-            rx, ry = max(e["rx"] * w, 4), max(e["ry"] * h, 3)
-            pr = e.get("pupil_r", e["ry"] * 0.6) * h
-            off = int(rx * 0.32)
-            cl = _median_color(img, int(cx - off), int(cy), 3)
-            cr = _median_color(img, int(cx + off), int(cy), 3)
-            white = cl if sum(cl) >= sum(cr) else cr
-            pup = _median_color(img, int(cx), int(cy), max(2, int(pr * 0.4)))
-            return Eye(cx=cx, cy=cy, rx=rx, ry=ry, pupil_r=max(pr, 3),
-                       white=white, pupil=pup)
+            rx, ry = max(e.get("rx", 0.04) * w, 4), max(e.get("ry", 0.03) * h, 3)
+            eye = _snap_eye(img, cx, cy, rx, ry, skin) or Eye(
+                cx=cx, cy=cy, rx=rx, ry=ry, pupil_r=max(ry * 0.6, 3),
+                white=_median_color(img, int(cx), int(cy), max(2, int(rx * 0.3))),
+                pupil=_median_color(img, int(cx), int(cy), 2))
+            return eye, vis
+
+        le, le_vis = mk_eye(d["left_eye"])
+        re_, re_vis = mk_eye(d["right_eye"])
+        if le and re_ and le.cx > re_.cx:
+            le, re_ = re_, le
+            le_vis, re_vis = re_vis, le_vis
+        if not le_vis:
+            le = None
+        if not re_vis:
+            re_ = None
 
         def mk_brow(b, eye):
-            if not b:
-                return Brow(cx=eye.cx, cy=eye.cy - eye.ry * 2.2, w=eye.rx * 2,
+            if eye is None:
+                return None
+            if not b or not b.get("visible", True):
+                return Brow(cx=eye.cx, cy=eye.cy - eye.ry * 2.4, w=eye.rx * 2,
                             h=max(eye.ry * 0.4, 4), color=[60, 60, 60])
             cx, cy = b["x"] * w, b["y"] * h
-            bw = b.get("w", 0.12) * w
-            return Brow(cx=cx, cy=cy, w=max(bw, eye.rx * 1.4),
-                        h=max(bw * 0.18, 4),
+            bw = b.get("w", 0.1) * w
+            return Brow(cx=cx, cy=cy, w=max(bw, eye.rx * 1.4), h=max(bw * 0.18, 4),
                         color=_median_color(img, int(cx), int(cy), 3))
 
-        le, re_ = mk_eye(d["left_eye"]), mk_eye(d["right_eye"])
-        if le.cx > re_.cx:
-            le, re_ = re_, le
         m = d["mouth"]
         mcx, mcy = m["x"] * w, m["y"] * h
         mw, mh = max(m["w"] * w, 8), max(m["h"] * h, 6)
-        x0, x1 = int(mcx - mw / 2), int(mcx + mw / 2)
-        y0, y1 = int(mcy - mh / 2), int(mcy + mh / 2)
-        patch = img[max(0, y0):max(y0 + 1, y1), max(0, x0):max(x0 + 1, x1)].reshape(-1, 3)
-        mcol = [int(v) for v in patch[int(np.argmin(patch.sum(axis=1)))]] if patch.size else [60, 60, 60]
-        mouth = Mouth(cx=mcx, cy=mcy, w=mw, h=mh, color=mcol, inner=[40, 50, 90])
+        snap = _snap_mouth(img, mcx, mcy, mw, mh, skin)
+        if snap:
+            mcx, mcy, mw, mh, mcol = snap
+        else:
+            x0, x1 = int(mcx - mw / 2), int(mcx + mw / 2)
+            y0, y1 = int(mcy - mh / 2), int(mcy + mh / 2)
+            patch = img[max(0, y0):max(y0 + 1, y1), max(0, x0):max(x0 + 1, x1)].reshape(-1, 3)
+            mcol = [int(v) for v in patch[int(np.argmin(patch.sum(axis=1)))]] if patch.size else [60, 60, 60]
+        mouth = Mouth(cx=mcx, cy=mcy, w=mw, h=max(mh, 6), color=mcol, inner=[40, 50, 90])
 
-        f = d["face"]
-        # skin: median of points around the face centre avoiding features
-        pts = [(f["cx"], (le.cy / h + f["cy"]) / 2), (f["cx"] - f["rx"] * 0.4, f["cy"]),
-               (f["cx"] + f["rx"] * 0.4, f["cy"])]
-        skins = [_median_color(img, int(px * w), int(py * h), 4) for px, py in pts]
-        skin = [int(v) for v in np.median(np.array(skins), axis=0)]
-
-        pivot = (f["cx"] * w, (f["cy"] + f["ry"]) * h)
+        nose = d.get("nose_tip")
+        pivot = ((nose["x"] * w if nose else fx + fw / 2), fy + fh * 1.02)
         return Rig(width=w, height=h, skin=skin, left_eye=le, right_eye=re_,
                    left_brow=mk_brow(d.get("left_brow"), le),
                    right_brow=mk_brow(d.get("right_brow"), re_),
-                   mouth=mouth, head_pivot=pivot, head_radius=f["rx"] * w,
-                   source="gemini-vision")
+                   mouth=mouth, head_pivot=pivot, head_radius=fw / 2,
+                   orientation=orient, face_box=face_box, source="gemini-vision")
 
 
 if __name__ == "__main__":
