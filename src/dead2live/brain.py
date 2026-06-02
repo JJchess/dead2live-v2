@@ -41,6 +41,12 @@ EXPRESSIONS: dict[str, AnimationState] = {
     "thinking":  AnimationState(brow_raise_l=8, brow_raise_r=-2, mouth_smile=-0.1,
                                 pupil_dx=0.5, pupil_dy=-0.5, head_roll=5),
     "wink":      AnimationState(eye_open_l=0.05, mouth_smile=0.9),
+    # 无语 / 无奈 / 翻白眼：半眯眼 + 眼球上翻 + 嘴角平/微下 + 轻微歪头（面瘫脸）
+    "speechless": AnimationState(eye_open_l=0.55, eye_open_r=0.55, pupil_dy=-0.65,
+                                 brow_raise_l=7, brow_raise_r=7, mouth_smile=-0.2,
+                                 head_roll=4),
+    "disgust":   AnimationState(brow_angle=10, brow_raise_l=4, mouth_smile=-0.5,
+                                eye_open_l=0.7, eye_open_r=0.7, pupil_dy=-0.2),
 }
 
 # emotion -> expression aliases (bilingual keywords)
@@ -53,6 +59,9 @@ _EXPR_KEYWORDS = {
     "thinking":  ["think", "ponder", "hmm", "思考", "想", "沉思", "疑惑"],
     "neutral":   ["neutral", "calm", "normal", "平静", "正常", "中性", "放松"],
     "wink":      ["wink", "眨眼睛", "使眼色", "抛媚眼"],
+    "speechless": ["speechless", "eye roll", "whatever", "无语", "无奈", "翻白眼",
+                   "醉了", "服了", "尴尬", "一言难尽", "面瘫"],
+    "disgust":   ["disgust", "disgusted", "yuck", "嫌弃", "恶心", "鄙视", "嫌弃脸"],
 }
 
 # action keywords

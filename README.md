@@ -10,18 +10,28 @@
 
 ---
 
-## 架构 (Architecture)
+## 架构 (Architecture) — 普适于任意 2D 人物
+
+两个稳定接口把"通用"与"按域实现"解耦，所以**换任何画风都不改架构，只切实现**：
 
 ```
-文字指令 ──►【Brain】意图解析 ──► Plan(表情 + 动作 + 时长)
-                                      │
-                              build_timeline ──► [AnimationState × N 帧]
-图片 ──►【Rig】特征检测 ──► 特征装配(眼/瞳/眉/嘴/头) + 调色板
-                                      │
-                            【PuppetAnimator】程序化重绘 + 头部仿射 ──► 帧
-                                      │
-                              【Render】 ──► MP4 / GIF / 实时预览
+文字指令 ─►【Brain】规则/Gemini ─► list[Plan] ─► build_timeline ─► [AnimationState × N]
+                                                                   │（通用语义控制信号）
+任意2D图 ─►【Pipeline 自动路由】                                    ▼
+   │  is_flat_art? ┌─ 扁平插画 → 检测: CV→MediaPipe→GeminiVision ─► Rig ─►【PuppetAnimator】程序化重绘
+   └───────────────┤
+                   └─ 照片/复杂 → 检测: MediaPipe→GeminiVision ────► Rig ─►【WarpAnimator】网格形变(TPS)
+                                                                   │
+                                                          【Render】─► MP4 / GIF
 ```
+
+- **契约 A `AnimationState`**：与画风无关的语义控制（眼/瞳/眉/嘴/头姿）——最具普适性的一层。
+- **契约 B `Rig`**：五官位置+调色板的中间表示，可由 CV / MediaPipe / Gemini Vision / 手写 JSON 产出。
+- **检测逐级兜底**：离线优先（CV、MediaPipe），失败才调 Gemini Vision（多模态，任意画风），省 API。
+- **渲染按画风选**：扁平插画用程序化重绘（最佳观感）；照片/绘画用 TPS 形变真实像素（通用）。
+
+> 已在 5 类输入上验证：扁平插画(莎士比亚)、不同配色卡通、淡肤色"动漫"、吉祥物、**真人照片**。
+> 见 `outputs/universality.png`、`outputs/warp_photo.png`。
 
 **为什么用「程序化重绘」而不是神经网络？**
 测试用的莎士比亚头像是扁平插画风，MediaPipe / LivePortrait 等基于真人脸的模型**完全检测不到**它的脸。
@@ -32,6 +42,10 @@
 ### 模块
 | 文件 | 职责 |
 |------|------|
+| `src/dead2live/interfaces.py` | 接口契约 `RigDetector`/`Animator` + 几何校验 `rig_score` + 画风分类 `is_flat_art` |
+| `src/dead2live/pipeline.py` | **自动路由** `build_animator(image)`：选检测器 + 选渲染器 |
+| `src/dead2live/detectors.py` | `MediaPipeRigDetector`（照片）+ `GeminiVisionRigDetector`（任意画风，多模态）|
+| `src/dead2live/warp_animator.py` | `WarpAnimator`：TPS 网格形变真实像素（照片/绘画通用渲染器）|
 | `src/dead2live/rig.py` | 特征检测：`CartoonRigDetector`（扁平插画）+ `Rig` 数据模型，可存/读 JSON |
 | `src/dead2live/animator.py` | `PuppetAnimator`：干净底图 + 逐帧程序化重绘五官 + 头部仿射；`AnimationState` |
 | `src/dead2live/brain.py` | 指令解析（中英双语）→ 多段 `Plan` 序列 → 缓动关键帧时间线（段间承接）|
@@ -86,7 +100,8 @@ python -m src.dead2live.brain                       # 指令解析自测
 - **Phase 2 — 真实感 & 输入扩展**
   - ✅ LLM 指令理解（Gemini）+ 多段动画序列
   - ✅ 头部分层：只变换头部而非整图（更自然的点头/摇头/侧倾）
-  - ⬜ 神经渲染器（LivePortrait）用于真人照片，复用 `Rig` 接口（`Animator` 已抽象）
+  - ✅ **普适化**：任意 2D 画风自动路由（CV/MediaPipe/GeminiVision 检测 + 程序化/形变渲染）
+  - ⬜ 神经渲染器（LivePortrait）用于真人照片照片级嘴/眼（弥补 TPS 无法生成眼皮/牙齿）
   - ⬜ 文生图输入：SD / SDXL-Turbo（适配 8GB），实现「一段描述 → 数字人」
   - ⬜ 语音口型：edge-tts 合成 → 音素/能量 → 真·口型同步
 - **Phase 3 — 3D**
@@ -95,5 +110,7 @@ python -m src.dead2live.brain                       # 指令解析自测
 ---
 
 ## 已知限制
-- 头部位移目前作用于整图（小幅度下可接受；分层在 Phase 2）。
-- `CartoonRigDetector` 针对高对比扁平插画；真人/复杂背景请走 Phase 2 神经路线或手工编辑 `Rig` JSON。
+- `WarpAnimator`（照片/绘画）靠形变真实像素：表情/口型/转头/挤眼可信，但**无法凭空生成眼皮或牙齿** ——
+  睁大的眼做完整闭合、张嘴露齿等照片级效果需 Phase 2 的 LivePortrait 神经路线。
+- 大眼动漫若被路由到 MediaPipe+程序化重绘，重绘眼可能偏小；可改用 Gemini Vision 检测改善。
+- Gemini Vision 检测为近似定位（非像素级），照片优先用 MediaPipe（更精确）。

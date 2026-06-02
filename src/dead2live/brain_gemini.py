@@ -38,8 +38,16 @@ a list of sequential "beats". Each beat has:
 Rules:
 - Split compound or sequential instructions ("first smile, then look surprised
   and shake head") into multiple beats in order.
-- Map feelings/situations to the closest expression (e.g. "tired" -> sad/neutral
-  with a yawn-like open mouth via 'talk' lightly; "confused" -> thinking).
+- Map feelings/situations to the closest expression. Mapping hints:
+  * 无语 / 无奈 / 翻白眼 / 醉了 / 服了 / 一言难尽 / "whatever" -> base "speechless"
+    (optionally + 'shake' for a small head shake of disbelief). Do NOT use
+    "surprised" for 无语.
+  * 嫌弃 / 恶心 / 鄙视 / disgusted -> base "disgust"
+  * 累 / 困 / tired / sleepy -> base "sad" or "neutral" + 'yawn'
+  * 困惑 / confused / hmm -> base "thinking"
+  * 开心大笑 / 哈哈 -> base "happy" + 'laugh'
+  * 打招呼 / greet / say something -> base "neutral"/"happy" + 'talk' with speak_text
+- Prefer "thinking" or "neutral" over "surprised" when the feeling is subtle.
 - A single simple instruction = one beat.
 - Keep it short: 1-4 beats. Output ONLY JSON matching the schema."""
 
