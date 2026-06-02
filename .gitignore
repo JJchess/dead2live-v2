@@ -6,3 +6,6 @@ assets/rigs/*.json
 *.mp4
 *.gif
 !outputs/expressions_grid.png
+
+# Claude Code local settings (machine-specific, not for commit)
+.claude/settings.local.json
