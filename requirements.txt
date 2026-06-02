@@ -1,0 +1,13 @@
+# Core (Phase 1 - 2D puppet, CPU/GPU agnostic)
+numpy
+opencv-python
+pillow
+scipy
+mediapipe==0.10.14   # photo-portrait landmark path (cartoons use CV auto-rig)
+imageio
+imageio-ffmpeg
+gradio>=4.0
+
+# Phase 2 (neural renderer / text->image / TTS) - installed on demand
+# torch / torchvision  (CUDA 12.x build)
+# liveportrait deps, diffusers, edge-tts

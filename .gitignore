@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+outputs/
+assets/rigs/*.json
+*.mp4
+*.gif
+!outputs/expressions_grid.png
